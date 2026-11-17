@@ -127,24 +127,33 @@
   function lede() {
     var v = DATA.validation;
     var proof = v ? el('div', { class: 'proof' },
-      el('span', { class: 'proof-item' }, el('b', { text: v.loo_r }), el('span', { text: 'LOO r' })),
-      el('span', { class: 'proof-item' }, el('b', { text: v.loo_rho }), el('span', { text: 'rank rho' })),
-      el('span', { class: 'proof-item' }, el('b', { text: v.within_2x + '%' }), el('span', { text: 'within 2x' })),
-      el('span', { class: 'proof-item' }, el('b', { text: '128' }), el('span', { text: 'held-out folds' }))
+      el('span', { class: 'proof-item' }, el('b', { text: v.loo_r }), el('span', { text: 'LOO r' }), el('i', { text: 'held-out correlation' })),
+      el('span', { class: 'proof-item' }, el('b', { text: v.loo_rho }), el('span', { text: 'rank rho' }), el('i', { text: 'does it order right' })),
+      el('span', { class: 'proof-item' }, el('b', { text: v.within_2x + '%' }), el('span', { text: 'within 2x' }), el('i', { text: 'hands-on hit rate' })),
+      el('span', { class: 'proof-item' }, el('b', { text: '128' }), el('span', { text: 'held-out folds' }), el('i', { text: 'one protocol removed' }))
     ) : null;
     return el('section', { class: 'lede' },
-      el('div', null,
+      el('div', { class: 'lede-copy' },
         el('h1', { text: DATA.board_size + ' pre-token protocols, ranked by implied value' }),
         el('p', { text: 'The board is the ' + DATA.watchlist_size + ' watchlist protocols, every one of them with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record, plus ' + DATA.early_size + ' pre-token protocols below that floor. Implied value is a model, not a promise.' }),
         proof
       ),
-      el('div', { class: 'facts' },
+      el('div', { class: 'lede-chart' }, pricingChart() || el('div', { class: 'facts' },
         el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
         el('div', { class: 'fact' }, el('span', { text: 'Pre-token rows scored' }), el('b', { text: String(DATA.board_size) })),
         el('div', { class: 'fact' }, el('span', { text: 'Early rows below the floor' }), el('b', { text: String(DATA.early_size) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Live-token protocols set aside' }), el('b', { text: String(DATA.live_size) })),
-        el('div', { class: 'fact fact-featured' }, el('span', { text: 'Top pre-token pick' }), el('b', { text: DATA.rows.length ? DATA.rows[0].name : 'n/a' }))
-      )
+        el('div', { class: 'fact' }, el('span', { text: 'Live-token protocols set aside' }), el('b', { text: String(DATA.live_size) }))
+      ))
+    );
+  }
+
+  function factStrip() {
+    return el('section', { class: 'fact-strip' },
+      el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
+      el('div', { class: 'fact' }, el('span', { text: 'Pre-token rows scored' }), el('b', { text: String(DATA.board_size) })),
+      el('div', { class: 'fact' }, el('span', { text: 'Early rows below the floor' }), el('b', { text: String(DATA.early_size) })),
+      el('div', { class: 'fact' }, el('span', { text: 'Live-token protocols set aside' }), el('b', { text: String(DATA.live_size) })),
+      el('div', { class: 'fact fact-featured' }, el('span', { text: 'Top pre-token pick' }), el('b', { text: DATA.rows.length ? DATA.rows[0].name : 'n/a' }))
     );
   }
 
@@ -171,7 +180,7 @@
     return el('th', { scope: 'col', class: numeric ? 'num' : null },
       el('button', { type: 'button', onclick: function () { if (state.sort === key) state.dir = -state.dir; else { state.sort = key; state.dir = -1; } render(); } },
         label,
-        state.sort === key ? el('span', { 'aria-hidden': 'true', text: state.dir < 0 ? ' v' : ' ^' }) : null
+        state.sort === key ? el('span', { 'aria-hidden': 'true', text: state.dir < 0 ? ' \u2193' : ' \u2191' }) : null
       )
     );
   }
@@ -280,6 +289,104 @@
     );
   }
 
+  // The one picture the page leads with: every live-token protocol's real market cap against its TVL
+  // (the calibration set), the fitted curve over them, and the pre-token board's implied values on the
+  // same axes. Drawn as inline SVG so the page stays static and needs no network or canvas library.
+  function pricingChart() {
+    var comps = DATA.live.filter(function (r) { return r.mcap_usd && r.tvl_usd > 0; });
+    if (comps.length < 5) return null;
+    var W = 560, H = 300, PAD_L = 58, PAD_R = 18, PAD_T = 18, PAD_B = 38;
+    var iw = W - PAD_L - PAD_R, ih = H - PAD_T - PAD_B;
+    var pts = comps.map(function (r) { return [r.tvl_usd, r.mcap_usd]; });
+    var board = DATA.rows.map(function (r) { return [r.tvl_usd, r.implied_value_usd]; });
+    var xs = pts.concat(board).map(function (p) { return Math.log10(Math.max(p[0], 1)); });
+    var ys = pts.concat(board).map(function (p) { return Math.log10(Math.max(p[1], 1)); });
+    var x0 = Math.floor(Math.min.apply(null, xs)), x1 = Math.ceil(Math.max.apply(null, xs));
+    var y0 = Math.floor(Math.min.apply(null, ys)), y1 = Math.ceil(Math.max.apply(null, ys));
+    function sx(v) { return PAD_L + ((v - x0) / (x1 - x0 || 1)) * iw; }
+    function sy(v) { return PAD_T + ih - ((v - y0) / (y1 - y0 || 1)) * ih; }
+    function usd(v) {
+      var a = Math.abs(v);
+      if (a >= 1e9) return '$' + (v / 1e9).toFixed(v >= 1e10 ? 0 : 1) + 'B';
+      if (a >= 1e6) return '$' + (v / 1e6).toFixed(v >= 1e7 ? 0 : 1) + 'M';
+      if (a >= 1e3) return '$' + Math.round(v / 1e3) + 'K';
+      return '$' + Math.round(v);
+    }
+    var m = DATA.model;
+    // the fitted line: implied = tvl * boundedMultiple, with no growth or category adjustment
+    function fitLine(tvl) {
+      var lg = m.regression_intercept + m.regression_b_tvl * Math.log10(Math.max(tvl, 1));
+      var base = Math.pow(10, lg);
+      var mult = Math.min(m.multiple_cap, Math.max(m.multiple_floor, base / Math.max(tvl, 1)));
+      return tvl * mult;
+    }
+    var SVGNS = 'http' + '://www.w3.org/2000/svg';
+    function s(tag, attrs) {
+      var n = document.createElementNS(SVGNS, tag);
+      Object.keys(attrs || {}).forEach(function (k) { n.setAttribute(k, attrs[k]); });
+      return n;
+    }
+    var svg = s('svg', { viewBox: '0 0 ' + W + ' ' + H, width: '100%', height: 'auto', role: 'img',
+      'aria-label': 'Live-token market caps against TVL, with the fitted curve and the pre-token implied values' });
+    // grid + axis ticks
+    var xi, yi, lab, tk;
+    for (xi = x0; xi <= x1; xi++) {
+      tk = s('line', { x1: sx(xi), y1: PAD_T, x2: sx(xi), y2: PAD_T + ih, stroke: '#e2ece7', 'stroke-width': 1 });
+      svg.appendChild(tk);
+      lab = s('text', { x: sx(xi), y: H - PAD_B + 15, 'text-anchor': 'middle', fill: '#5d6d65', 'font-size': 11 });
+      lab.textContent = usd(Math.pow(10, xi));
+      svg.appendChild(lab);
+    }
+    for (yi = y0; yi <= y1; yi++) {
+      svg.appendChild(s('line', { x1: PAD_L, y1: sy(yi), x2: PAD_L + iw, y2: sy(yi), stroke: '#e2ece7', 'stroke-width': 1 }));
+      lab = s('text', { x: PAD_L - 8, y: sy(yi) + 3, 'text-anchor': 'end', fill: '#5d6d65', 'font-size': 11 });
+      lab.textContent = usd(Math.pow(10, yi));
+      svg.appendChild(lab);
+    }
+    // fitted curve
+    var d = '';
+    var steps = 60;
+    for (var i = 0; i <= steps; i++) {
+      var lgx = x0 + ((x1 - x0) * i) / steps;
+      var tvl = Math.pow(10, lgx);
+      var yy = Math.log10(Math.max(fitLine(tvl), 1));
+      if (yy < y0 - 1 || yy > y1 + 1) { if (d) { d += ''; } continue; }
+      d += (d ? ' L' : 'M') + sx(lgx).toFixed(1) + ' ' + sy(yy).toFixed(1);
+    }
+    if (d) svg.appendChild(s('path', { d: d, fill: 'none', stroke: '#0c6a4b', 'stroke-width': 2, 'stroke-linecap': 'round' }));
+    // calibration points: real market caps
+    pts.forEach(function (p) {
+      svg.appendChild(s('circle', { cx: sx(Math.log10(p[0])).toFixed(1), cy: sy(Math.log10(p[1])).toFixed(1), r: 3.6,
+        fill: '#9aa8a0', opacity: 0.85 }));
+    });
+    // the board's implied values
+    board.forEach(function (p) {
+      svg.appendChild(s('circle', { cx: sx(Math.log10(p[0])).toFixed(1), cy: sy(Math.log10(p[1])).toFixed(1), r: 2.6,
+        fill: '#0f8a63', opacity: 0.5 }));
+    });
+    // axis titles
+    var xl = s('text', { x: PAD_L + iw / 2, y: H - 4, 'text-anchor': 'middle', fill: '#5d6d65', 'font-size': 12, 'font-weight': 600 });
+    xl.textContent = 'protocol TVL (log)';
+    svg.appendChild(xl);
+    var yl = s('text', { x: 12, y: PAD_T + ih / 2, 'text-anchor': 'middle', fill: '#5d6d65', 'font-size': 12, 'font-weight': 600,
+      transform: 'rotate(-90 12 ' + (PAD_T + ih / 2) + ')' });
+    yl.textContent = 'value (log)';
+    svg.appendChild(yl);
+    return el('section', { class: 'panel chart-panel' },
+      el('div', { class: 'chart-head' },
+        el('h2', { text: 'How a launch is priced' }),
+        el('span', { class: 'chart-note', text: comps.length + ' live protocols set the curve' })
+      ),
+      svg,
+      el('div', { class: 'legend' },
+        el('span', { class: 'legend-item' }, el('i', { class: 'sw sw-comp' }), 'live-token market cap'),
+        el('span', { class: 'legend-item' }, el('i', { class: 'sw sw-board' }), 'pre-token implied value'),
+        el('span', { class: 'legend-item' }, el('i', { class: 'sw sw-line' }), 'fitted curve')
+      ),
+      el('p', { class: 'sub chart-caption', text: 'Grey: the ' + comps.length + ' live-token protocols, whose market caps are recorded facts. Green: the board\'s implied values. Line: the fitted log10 curve, its multiple clamped to the range the market has paid. The gap between a green point and the line is the category, chain and growth terms at work. ' + (DATA.validation ? 'Out of sample, ' + DATA.validation.within_3x + '% of held-out protocols land within 3x.' : '') })
+    );
+  }
+
   var dialog = el('dialog', { class: 'detail', id: 'detail', 'aria-labelledby': 'detail-title' });
   dialog.addEventListener('close', function () { state.selected = null; writeHash(); });
 
@@ -333,6 +440,7 @@
     var shell = el('div', { class: 'shell' });
     shell.appendChild(header());
     shell.appendChild(lede());
+    shell.appendChild(factStrip());
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
     if (state.tab === 'pre-token') {
