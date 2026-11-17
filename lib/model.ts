@@ -6,23 +6,27 @@
 // snapshot's live-token protocols are kept apart and shown as the market's own values, never mixed into
 // the ranked board.
 //
-// Implied value fits a log-log regression over the 128 live-token protocols in the snapshot. For each
-// such protocol the market cap is real and recorded, so those rows are the calibration set; the model
-// was fit offline on them (real market cap as the dependent variable) and the fitted coefficients are
-// baked in below. The estimate is:
+// Implied value fits a linear regression in log10 space over the snapshot's 128 live-token protocols
+// (those with mcap_usd > 0 and tvl_usd > 0), whose real market caps are the dependent variable and the
+// calibration set. The fitted coefficients are baked in below. The estimate is:
 //
-//   log10(implied) = intercept + b1 * log10(tvl_usd) + b2 * change_7d/100
-//                              + b3 * category_issuance_rate + b4 * mean_chain_issuance_rate
-//   implied         = max(1, round(10^log10(implied)))
+//   lg               = intercept + b_tvl * log10(tvl_usd)
+//                              + b_category * category_issuance_rate + b_chain * mean_chain_issuance_rate
+//   base             = 10^lg
+//   growthMultiplier = (1 + growth_weight * clamp(max(change_7d,0),0,growth_cap)/100)
+//                    * (1 - growth_weight * clamp(max(-change_7d,0),0,100)/100)
+//   fitMultiple      = base / tvl_usd
+//   boundedMultiple  = min(multiple_cap, max(multiple_floor, fitMultiple))
+//   implied          = max(1, round(tvl_usd * boundedMultiple * growthMultiplier))   // tvl_usd > 0
+//                   = max(1, round(base * growthMultiplier))                         // tvl_usd <= 0
 //
-// The issuance rates are derived from the snapshot itself: for each category and each chain we count
-// the share of its protocols that already trade a token (mcap_usd, gecko_id or symbol present) and
-// smooth that share toward the snapshot's global rate with a pseudocount alpha=8. Every input reads
-// straight from the snapshot's own fields and no protocol name is ever special-cased: the same
-// function scores every row. Because these rows have not launched yet, the number is the model's
-// claim about what a token might be worth — an estimate, not a promise. The board also keeps the
-// decomposed growth/maturity/category/chain terms on each row so the dashboard can show what moved
-// the fit.
+// Seven-day growth enters as a bounded bonus/penalty multiplier rather than a fitted coefficient: a
+// TVL collapse should not raise a protocol's rank, so negative change_7d only subtracts up to 10% and
+// positive change adds up to +30%, capped at growth_cap. The implied multiple (implied / tvl_usd) is
+// clamped to the 2nd-98th percentile of observed mcap/TVL across the calibration set, so an implied
+// value stays inside the range the market has actually paid rather than drifting unbounded off the fit.
+// An implied value is the entry's own claim about what a pre-token token might be worth -- an estimate,
+// never a promise.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -50,18 +54,24 @@ export interface Snapshot {
 /** The model's constants, as the dashboard states them and the sandbox may change them. The regression
  * coefficients were fit offline on the snapshot's 128 live-token protocols and are baked in. */
 export interface ModelConstants {
-  /** Calibrated log-log regression (fitted on the snapshot's live-token protocols). */
+  /** Calibrated log10-space regression (fitted on the snapshot's 128 live-token protocols). */
   regression_intercept: number;
   regression_b_tvl: number;
-  regression_b_growth: number;
   regression_b_category: number;
   regression_b_chain: number;
+  /** 2nd percentile of observed mcap/TVL across the calibration set: the implied multiple's floor. */
+  multiple_floor: number;
+  /** 98th percentile of observed mcap/TVL across the calibration set: the implied multiple's cap. */
+  multiple_cap: number;
   /** Pseudocount smoothing the issuance rates toward the snapshot's global rate. */
   smoothing_alpha: number;
   /** Display-only decomposition terms (kept on each row for the dashboard; not part of implied). */
   base_multiple: number;
+  /** Bounded growth multiplier weight (0.1): positive change adds up to +30%, negative subtracts at most 10%. */
   growth_weight: number;
+  /** Display-only: clipped seven-day growth shown on each row (floor/cap for the display). */
   growth_floor: number;
+  /** Display-only: clip for positive seven-day growth (the bonus's cap). */
   growth_cap: number;
   maturity_floor: number;
   maturity_range: number;
@@ -74,16 +84,17 @@ export interface ModelConstants {
 }
 
 export const MODEL: ModelConstants = {
-  regression_intercept: 7.1268,
-  regression_b_tvl: 0.4964,
-  regression_b_growth: -0.0376,
-  regression_b_category: -1.5767,
-  regression_b_chain: 1.7211,
+  regression_intercept: 3.020409,
+  regression_b_tvl: 0.499425,
+  regression_b_category: -0.602344,
+  regression_b_chain: 0.874772,
+  multiple_floor: 0.00129,
+  multiple_cap: 18.9756,
   smoothing_alpha: 8,
   base_multiple: 0.2,
-  growth_weight: 0.5,
-  growth_floor: -60,
-  growth_cap: 120,
+  growth_weight: 0.1,
+  growth_floor: -100,
+  growth_cap: 300,
   maturity_floor: 0.55,
   maturity_range: 0.45,
   maturity_days: 1460,
@@ -234,7 +245,11 @@ export function impliedValue(
   const age = ageDays(asOf, protocol.listed_at);
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
-  const growthMult = 1 + (growthPct / 100) * model.growth_weight;
+  // Seven-day growth enters as a bounded multiplier, not a fitted coefficient: positive change adds up
+  // to +30% (growth_weight x growth_cap / 100), negative subtracts at most 10%, and null is treated as 0.
+  const growthPos = Math.min(Math.max(rawGrowth, 0), model.growth_cap);
+  const growthNeg = Math.min(Math.max(-rawGrowth, 0), 100);
+  const growthMult = (1 + (model.growth_weight * growthPos) / 100) * (1 - (model.growth_weight * growthNeg) / 100);
   const ageForModel = age ?? model.unknown_age_days;
   const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
   const catRate = protocol.category === null ? ctx.globalRate : (ctx.categoryRate.get(protocol.category) ?? ctx.globalRate);
@@ -246,16 +261,22 @@ export function impliedValue(
     chainRate = sum / protocol.chains.length;
   }
   const chainMult = model.chain_mult_min + chainRate * model.chain_mult_range;
-  // Calibrated log-log regression over the snapshot's live-token protocols. The same arithmetic is
+  // Calibrated log10-space regression over the snapshot's live-token protocols. The same arithmetic is
   // reproduced in the dashboard's impliedOf(), so the page's re-derived number matches the board.
-  const g = finite(protocol.change_7d, 0);
-  const log10Implied =
+  const lg =
     model.regression_intercept +
     model.regression_b_tvl * Math.log10(Math.max(protocol.tvl_usd, 1)) +
-    model.regression_b_growth * (g / 100) +
     model.regression_b_category * catRate +
     model.regression_b_chain * chainRate;
-  const implied = Math.max(1, Math.round(Math.pow(10, log10Implied)));
+  const base = Math.pow(10, lg);
+  let implied: number;
+  if (protocol.tvl_usd > 0) {
+    const fitMultiple = base / protocol.tvl_usd;
+    const boundedMultiple = Math.min(model.multiple_cap, Math.max(model.multiple_floor, fitMultiple));
+    implied = Math.max(1, Math.round(protocol.tvl_usd * boundedMultiple * growthMult));
+  } else {
+    implied = Math.max(1, Math.round(base * growthMult));
+  }
   return { implied, growthPct, growthMult, maturityMult, categoryMult, chainMult, age, categoryRate: catRate, chainRate };
 }
 

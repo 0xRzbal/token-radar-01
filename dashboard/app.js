@@ -27,15 +27,21 @@
     return Math.max(0, Math.round(days)) + 'd';
   }
   // The model in one function, matching the board's arithmetic: the page re-runs the calibrated
-  // log-log regression on the row's own inputs so the displayed value matches the board exactly.
+  // log10-space regression on the row's own inputs so the displayed value matches the board exactly.
   function impliedOf(row, model) {
     var g = (row.change_7d === null || row.change_7d === undefined) ? 0 : row.change_7d;
+    var pos = Math.min(Math.max(g, 0), model.growth_cap);
+    var neg = Math.min(Math.max(-g, 0), 100);
+    var growthMult = (1 + model.growth_weight * pos / 100) * (1 - model.growth_weight * neg / 100);
     var lg = model.regression_intercept
       + model.regression_b_tvl * Math.log10(Math.max(row.tvl_usd, 1))
-      + model.regression_b_growth * (g / 100)
       + model.regression_b_category * row.category_rate
       + model.regression_b_chain * row.chain_rate;
-    return Math.max(1, Math.round(Math.pow(10, lg)));
+    var base = Math.pow(10, lg);
+    if (row.tvl_usd <= 0) return Math.max(1, Math.round(base * growthMult));
+    var fitMultiple = base / row.tvl_usd;
+    var boundedMultiple = Math.min(model.multiple_cap, Math.max(model.multiple_floor, fitMultiple));
+    return Math.max(1, Math.round(row.tvl_usd * boundedMultiple * growthMult));
   }
 
   function el(tag, attrs) {
@@ -246,9 +252,9 @@
       el('h2', { text: 'How implied value is computed' }),
       el('p', { class: 'sub', text: 'Implied value fits a log-log regression over the 128 live-token protocols in the snapshot: TVL, seven-day growth, and the category and chain issuance background. No protocol name is special-cased, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
-        'log10(implied) = ' + m.regression_intercept + ' + ' + m.regression_b_tvl + '·log10(tvl_usd) + ' + m.regression_b_growth + '·(change_7d/100) + ' + m.regression_b_category + '·issuanceRate(category) + ' + m.regression_b_chain + '·avgIssuanceRate(chains); implied = max(1, round(10^log10))'
+        'lg = ' + m.regression_intercept + ' + ' + m.regression_b_tvl + '·log10(tvl_usd) + ' + m.regression_b_category + '·issuanceRate(category) + ' + m.regression_b_chain + '·avgIssuanceRate(chains); base = 10^lg; growthMultiplier = (1 + ' + m.growth_weight + '·clamp(max(change_7d,0),0,' + m.growth_cap + ')/100)·(1 − ' + m.growth_weight + '·clamp(max(−change_7d,0),0,100)/100); boundedMultiple = min(' + m.multiple_cap + ', max(' + m.multiple_floor + ', base/tvl_usd)); implied = max(1, round(tvl_usd·boundedMultiple·growthMultiplier))'
       ),
-      el('p', { class: 'sub', text: 'The coefficients were fitted offline on the live-token protocols, whose market caps are real and recorded, so they are the calibration set. The category and chain terms are the snapshot\u0027s own token-issuance rates: the share of each category\u0027s and chain\u0027s protocols that already trade a token, smoothed toward the global rate. For a pre-token row the number is the model\u0027s claim about what a token might be worth, not a promise. The early radar adds pre-token protocols below the watchlist floor by TVL; live-token protocols are set aside with their market caps shown.' })
+      el('p', { class: 'sub', text: 'The regression is fitted in log10 space on the snapshot\u0027s 128 live-token protocols, whose market caps are real and recorded, so they are the calibration set. Seven-day growth enters as a bounded bonus/penalty multiplier rather than a fitted coefficient, because a TVL collapse should not raise a protocol\u0027s rank: positive change adds up to +30%, negative subtracts at most 10%. The implied multiple is clamped to the observed 2nd-98th percentile of mcap/TVL across the calibration set, so an implied value stays inside the range the market has actually paid. An implied value is the entry\u0027s own claim about what a pre-token token might be worth — an estimate, never a promise. The category and chain terms are the snapshot\u0027s own token-issuance rates, smoothed toward the global rate; the early radar adds pre-token protocols below the watchlist floor by TVL, and live-token protocols are set aside with their market caps shown.' })
     );
   }
 
@@ -282,7 +288,7 @@
         el('div', null, el('span', { text: 'Chain multiplier' }), el('b', { class: 'num', text: String(row.chain_multiplier) })),
         el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
-      el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': log10(implied) = ' + DATA.model.regression_intercept + ' + ' + DATA.model.regression_b_tvl + '·log10(tvl) + ' + DATA.model.regression_b_growth + '·(change_7d/100) + ' + DATA.model.regression_b_category + '·issuanceRate(category) + ' + DATA.model.regression_b_chain + '·avgIssuanceRate(chains) = ' + fmtUsd(impliedOf(row, DATA.model)) + ', the same number the board ranks. This is an estimate for a pre-token claim, not a promise.' })
+      el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': lg = ' + DATA.model.regression_intercept + ' + ' + DATA.model.regression_b_tvl + '·log10(tvl) + ' + DATA.model.regression_b_category + '·issuanceRate(category) + ' + DATA.model.regression_b_chain + '·avgIssuanceRate(chains); × growthMultiplier; boundedMultiple = min(' + DATA.model.multiple_cap + ', max(' + DATA.model.multiple_floor + ', base/tvl)) = ' + fmtUsd(impliedOf(row, DATA.model)) + ', the same number the board ranks. An implied value is the entry\u0027s own claim about a pre-token protocol — an estimate, never a promise.' })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),
