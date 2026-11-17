@@ -88,6 +88,8 @@ a:hover { text-decoration: underline; }
 }
 .fact b { font-family: var(--font-num); font-size: 22px; font-weight: 650; color: var(--ink); letter-spacing: -0.02em; }
 .fact span { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+.fact-featured { box-shadow: inset 2px 0 0 var(--accent); padding-left: var(--step-3); }
+
 
 .controls {
   display: flex; flex-wrap: wrap; align-items: end; gap: var(--step-3); padding: var(--step-4) 0;
