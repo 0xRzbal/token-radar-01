@@ -125,10 +125,18 @@
   }
 
   function lede() {
+    var v = DATA.validation;
+    var proof = v ? el('div', { class: 'proof' },
+      el('span', { class: 'proof-item' }, el('b', { text: v.loo_r }), el('span', { text: 'LOO r' })),
+      el('span', { class: 'proof-item' }, el('b', { text: v.loo_rho }), el('span', { text: 'rank rho' })),
+      el('span', { class: 'proof-item' }, el('b', { text: v.within_2x + '%' }), el('span', { text: 'within 2x' })),
+      el('span', { class: 'proof-item' }, el('b', { text: '128' }), el('span', { text: 'held-out folds' }))
+    ) : null;
     return el('section', { class: 'lede' },
       el('div', null,
         el('h1', { text: DATA.board_size + ' pre-token protocols, ranked by implied value' }),
-        el('p', { text: 'The board is the ' + DATA.watchlist_size + ' watchlist protocols, every one of them with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record, plus ' + DATA.early_size + ' pre-token protocols below that floor. Implied value is a model, not a promise.' })
+        el('p', { text: 'The board is the ' + DATA.watchlist_size + ' watchlist protocols, every one of them with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record, plus ' + DATA.early_size + ' pre-token protocols below that floor. Implied value is a model, not a promise.' }),
+        proof
       ),
       el('div', { class: 'facts' },
         el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
@@ -159,8 +167,8 @@
     );
   }
 
-  function sortHeader(key, label) {
-    return el('th', { scope: 'col' },
+  function sortHeader(key, label, numeric) {
+    return el('th', { scope: 'col', class: numeric ? 'num' : null },
       el('button', { type: 'button', onclick: function () { if (state.sort === key) state.dir = -state.dir; else { state.sort = key; state.dir = -1; } render(); } },
         label,
         state.sort === key ? el('span', { 'aria-hidden': 'true', text: state.dir < 0 ? ' v' : ' ^' }) : null
@@ -209,13 +217,13 @@
         el('table', null,
           el('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. Select a row for its model and farm plan.' }),
           el('thead', null, el('tr', null,
-            sortHeader('implied', 'Rank'),
+            sortHeader('implied', 'Rank', true),
             sortHeader('name', 'Protocol'),
-            sortHeader('tvl', 'TVL'),
-            sortHeader('growth', '7d'),
-            sortHeader('age', 'Age'),
-            sortHeader('implied', 'Implied value'),
-            el('th', { scope: 'col', text: 'Token' })
+            sortHeader('tvl', 'TVL', true),
+            sortHeader('growth', '7d', true),
+            sortHeader('age', 'Age', true),
+            sortHeader('implied', 'Implied value', true),
+            el('th', { scope: 'col', class: 'num', text: 'Token' })
           )),
           tbody
         )

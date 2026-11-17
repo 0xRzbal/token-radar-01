@@ -80,6 +80,14 @@ a:hover { text-decoration: underline; }
 .lede { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(300px, 0.7fr); gap: var(--step-6); padding: var(--step-6) 0 var(--step-5); align-items: center; }
 .lede h1 .accent { color: var(--accent); }
 .lede p { color: var(--muted); max-width: 60ch; margin-top: var(--step-3); }
+.proof { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--step-2); margin-top: var(--step-4); }
+.proof-item {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  background: var(--surface); border: 1px solid var(--border); border-left: 2px solid var(--accent);
+  border-radius: var(--radius-control); padding: 8px 12px; box-shadow: var(--shadow); min-width: 0;
+}
+.proof-item b { font-family: var(--font-num); font-size: 16px; font-weight: 650; color: var(--accent); letter-spacing: -0.02em; }
+.proof-item span { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; white-space: nowrap; }
 .facts { display: grid; grid-template-columns: 1fr 1fr; gap: var(--step-3); }
 .fact {
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-panel);
@@ -118,7 +126,9 @@ tbody tr { cursor: pointer; transition: background 90ms ease; }
 tbody tr:hover { background: color-mix(in srgb, var(--accent) 4%, var(--surface)); }
 tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 9%, var(--surface)); }
 tbody tr:last-child td { border-bottom: 0; }
-.num { font-family: var(--font-num); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.num { font-family: var(--font-num); font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
+th.num { text-align: right; }
+th.num button { justify-content: flex-end; }
 .rank { font-family: var(--font-num); font-weight: 650; color: var(--ink-soft); }
 .name { display: grid; gap: 3px; }
 .name b { font-weight: 650; font-size: 14.5px; }
@@ -148,8 +158,10 @@ tbody tr:last-child td { border-bottom: 0; }
 .button.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); box-shadow: 0 6px 16px rgba(12, 106, 75, 0.28); }
 .button.primary:hover { background: var(--accent-deep); }
 
+thead th button { display: flex; align-items: center; gap: 4px; width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-transform: inherit; letter-spacing: inherit; }
+th.num button { justify-content: flex-end; }
 .detail {
-  position: fixed; top: 0; right: 0; bottom: 0; width: min(540px, 94vw); z-index: 30;
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(460px, 92vw); z-index: 30;
   background: var(--surface); border-left: 1px solid var(--border);
   padding: var(--step-5); overflow-y: auto;
   box-shadow: var(--shadow-float);
