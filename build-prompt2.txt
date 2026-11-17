@@ -1,0 +1,9 @@
+You are revising a token-radar-01 entry you already built. The competition rejected the previous bundle because the entrypoint main.ts is byte-identical to the starter kit and therefore not counted as authored, dropping authorship coverage below the 30% gate.
+
+Your task:
+1. Rewrite main.ts genuinely (the entry <-> env lifecycle): keep its exact external behavior but refactor it as your own code — improve structure, extract helper functions, add clearer error handling/logging. Make it substantively different from the starter, not a copy. Do NOT change its API contract or how it reads input/writes out.
+2. Keep the dashboard and lib/ files you already authored intact (they pass). Make one additional meaningful improvement if natural (e.g. a small enhancement to lib/model.ts or dashboard).
+3. Run it to confirm it still produces output: `mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input /tmp/kit_tokenradar/token-radar-01-kit/input/snapshot.json` and confirm out/board.json is written.
+4. Commit your changes to git.
+
+Write the code yourself — do not paste the starter content verbatim. Apply real edits to the entrypoint.
