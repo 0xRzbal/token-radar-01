@@ -26,10 +26,16 @@
     if (days >= 365) return (days / 365).toFixed(1) + 'y';
     return Math.max(0, Math.round(days)) + 'd';
   }
-  // The model in one function, matching the board's arithmetic: the page rebuilds a row from its
-  // stored multipliers so the displayed value is visibly the same product the board wrote.
+  // The model in one function, matching the board's arithmetic: the page re-runs the calibrated
+  // log-log regression on the row's own inputs so the displayed value matches the board exactly.
   function impliedOf(row, model) {
-    return Math.max(1, Math.round(row.tvl_usd * model.base_multiple * row.growth_multiplier * row.maturity_multiplier * row.category_multiplier * row.chain_multiplier));
+    var g = (row.change_7d === null || row.change_7d === undefined) ? 0 : row.change_7d;
+    var lg = model.regression_intercept
+      + model.regression_b_tvl * Math.log10(Math.max(row.tvl_usd, 1))
+      + model.regression_b_growth * (g / 100)
+      + model.regression_b_category * row.category_rate
+      + model.regression_b_chain * row.chain_rate;
+    return Math.max(1, Math.round(Math.pow(10, lg)));
   }
 
   function el(tag, attrs) {
@@ -238,11 +244,11 @@
     var m = DATA.model;
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
-      el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot fields. No protocol name is special-cased, and no row is hand-picked.' }),
+      el('p', { class: 'sub', text: 'Implied value fits a log-log regression over the 128 live-token protocols in the snapshot: TVL, seven-day growth, and the category and chain issuance background. No protocol name is special-cased, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd x ' + m.base_multiple + ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') x (' + m.category_mult_min + ' + issuanceRate(category) x ' + m.category_mult_range + ') x (' + m.chain_mult_min + ' + avgIssuanceRate(chains) x ' + m.chain_mult_range + ') )'
+        'log10(implied) = ' + m.regression_intercept + ' + ' + m.regression_b_tvl + '·log10(tvl_usd) + ' + m.regression_b_growth + '·(change_7d/100) + ' + m.regression_b_category + '·issuanceRate(category) + ' + m.regression_b_chain + '·avgIssuanceRate(chains); implied = max(1, round(10^log10))'
       ),
-      el('p', { class: 'sub', text: 'TVL, seven-day growth and age come from the snapshot. The category and chain terms are the snapshot\u0027s own token-issuance rates: the share of each category\u0027s and chain\u0027s protocols that already trade a token, smoothed toward the global rate, so a category where almost everything issues a token (Dexs, Lending) is rewarded and one where little does (risk curators, wrapped products) is discounted. The early radar adds pre-token protocols below the watchlist floor by TVL; live-token protocols are set aside with their market caps shown.' })
+      el('p', { class: 'sub', text: 'The coefficients were fitted offline on the live-token protocols, whose market caps are real and recorded, so they are the calibration set. The category and chain terms are the snapshot\u0027s own token-issuance rates: the share of each category\u0027s and chain\u0027s protocols that already trade a token, smoothed toward the global rate. For a pre-token row the number is the model\u0027s claim about what a token might be worth, not a promise. The early radar adds pre-token protocols below the watchlist floor by TVL; live-token protocols are set aside with their market caps shown.' })
     );
   }
 
@@ -276,7 +282,7 @@
         el('div', null, el('span', { text: 'Chain multiplier' }), el('b', { class: 'num', text: String(row.chain_multiplier) })),
         el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
-      el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': tvl_usd x ' + DATA.model.base_multiple + ' x ' + row.growth_multiplier + ' x ' + row.maturity_multiplier + ' x ' + row.category_multiplier + ' x ' + row.chain_multiplier + ' = ' + fmtUsd(impliedOf(row, DATA.model)) + ', the same number the board ranks. This is an estimate, not a price.' })
+      el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': log10(implied) = ' + DATA.model.regression_intercept + ' + ' + DATA.model.regression_b_tvl + '·log10(tvl) + ' + DATA.model.regression_b_growth + '·(change_7d/100) + ' + DATA.model.regression_b_category + '·issuanceRate(category) + ' + DATA.model.regression_b_chain + '·avgIssuanceRate(chains) = ' + fmtUsd(impliedOf(row, DATA.model)) + ', the same number the board ranks. This is an estimate for a pre-token claim, not a promise.' })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),

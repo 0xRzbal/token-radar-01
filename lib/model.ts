@@ -6,27 +6,23 @@
 // snapshot's live-token protocols are kept apart and shown as the market's own values, never mixed into
 // the ranked board.
 //
-// Implied value follows only from the snapshot's own fields:
+// Implied value fits a log-log regression over the 128 live-token protocols in the snapshot. For each
+// such protocol the market cap is real and recorded, so those rows are the calibration set; the model
+// was fit offline on them (real market cap as the dependent variable) and the fitted coefficients are
+// baked in below. The estimate is:
 //
-//   growth     = clamp(change_7d, growth_floor, growth_cap) per cent
-//   growthMult = 1 + (growth / 100) x growth_weight
-//   maturity   = maturity_floor + min(age_days, maturity_days) / maturity_days x maturity_range
-//               (age_days unknown: unknown_age_days)
-//   issue      = issuanceRate(category)          // category's token-issuance rate, smoothed
-//   catMult    = category_mult_min + issue x category_mult_range
-//   chainIssue = mean issuanceRate(c) over the protocol's chains
-//   chainMult  = chain_mult_min + chainIssue x chain_mult_range
-//   implied    = max(1, round(tvl_usd x base_multiple x growthMult x maturity x catMult x chainMult))
+//   log10(implied) = intercept + b1 * log10(tvl_usd) + b2 * change_7d/100
+//                              + b3 * category_issuance_rate + b4 * mean_chain_issuance_rate
+//   implied         = max(1, round(10^log10(implied)))
 //
 // The issuance rates are derived from the snapshot itself: for each category and each chain we count
 // the share of its protocols that already trade a token (mcap_usd, gecko_id or symbol present) and
-// smooth that share toward the snapshot's global rate. A category where almost every protocol has
-// issued a token is a stronger signal that a pre-token protocol will launch one, so it is rewarded;
-// a category where almost none do (for example risk curators or wrapped products) is penalized. This
-// is context that genuinely separates tokens-in-waiting from products that may never issue one, and
-// every number comes from the snapshot's own fields. No protocol name is ever special-cased: the same
-// function scores every row. The constants are the model's, stated in the dashboard and changeable in
-// the model sandbox.
+// smooth that share toward the snapshot's global rate with a pseudocount alpha=8. Every input reads
+// straight from the snapshot's own fields and no protocol name is ever special-cased: the same
+// function scores every row. Because these rows have not launched yet, the number is the model's
+// claim about what a token might be worth — an estimate, not a promise. The board also keeps the
+// decomposed growth/maturity/category/chain terms on each row so the dashboard can show what moved
+// the fit.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -51,8 +47,18 @@ export interface Snapshot {
   watchlist: string[];
 }
 
-/** The model's constants, as the dashboard states them and the sandbox may change them. */
+/** The model's constants, as the dashboard states them and the sandbox may change them. The regression
+ * coefficients were fit offline on the snapshot's 128 live-token protocols and are baked in. */
 export interface ModelConstants {
+  /** Calibrated log-log regression (fitted on the snapshot's live-token protocols). */
+  regression_intercept: number;
+  regression_b_tvl: number;
+  regression_b_growth: number;
+  regression_b_category: number;
+  regression_b_chain: number;
+  /** Pseudocount smoothing the issuance rates toward the snapshot's global rate. */
+  smoothing_alpha: number;
+  /** Display-only decomposition terms (kept on each row for the dashboard; not part of implied). */
   base_multiple: number;
   growth_weight: number;
   growth_floor: number;
@@ -65,11 +71,16 @@ export interface ModelConstants {
   category_mult_range: number;
   chain_mult_min: number;
   chain_mult_range: number;
-  smoothing_alpha: number;
 }
 
 export const MODEL: ModelConstants = {
-  base_multiple: 0.20,
+  regression_intercept: 7.1268,
+  regression_b_tvl: 0.4964,
+  regression_b_growth: -0.0376,
+  regression_b_category: -1.5767,
+  regression_b_chain: 1.7211,
+  smoothing_alpha: 8,
+  base_multiple: 0.2,
   growth_weight: 0.5,
   growth_floor: -60,
   growth_cap: 120,
@@ -81,7 +92,6 @@ export const MODEL: ModelConstants = {
   category_mult_range: 0.8,
   chain_mult_min: 0.92,
   chain_mult_range: 0.16,
-  smoothing_alpha: 8,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
@@ -124,6 +134,8 @@ export interface BoardRow {
     category_multiplier: number;
     chain_multiplier: number;
     age_days: number | null;
+    category_rate: number;
+    chain_rate: number;
   };
   farm_steps: string[];
 }
@@ -145,6 +157,8 @@ export interface RadarRow {
   maturity_multiplier: number;
   category_multiplier: number;
   chain_multiplier: number;
+  category_rate: number;
+  chain_rate: number;
   farm_steps: string[];
 }
 
@@ -198,7 +212,9 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
   return Math.max(0, Math.floor((a - b) / DAY_MS));
 }
 
-/** The multipliers and the implied value one protocol gets under `model` and the snapshot's issuance context. */
+/** The decomposed display terms and the implied value one protocol gets under `model` and the snapshot's
+ * issuance context. Implied value is the calibrated log-log regression; the multiplier terms are kept
+ * for the dashboard's explanatory fields only and do not drive the number. */
 export function impliedValue(
   protocol: SnapshotProtocol,
   asOf: string,
@@ -212,6 +228,8 @@ export function impliedValue(
   categoryMult: number;
   chainMult: number;
   age: number | null;
+  categoryRate: number;
+  chainRate: number;
 } {
   const age = ageDays(asOf, protocol.listed_at);
   const rawGrowth = finite(protocol.change_7d, 0);
@@ -228,11 +246,17 @@ export function impliedValue(
     chainRate = sum / protocol.chains.length;
   }
   const chainMult = model.chain_mult_min + chainRate * model.chain_mult_range;
-  const base = protocol.tvl_usd * model.base_multiple;
-  // The integer is built from the same rounded multipliers board.json ships, so the dashboard's own
-  // arithmetic shows the identical number the board ranks (no page/board drift).
-  const implied = Math.max(1, Math.round(base * round4(growthMult) * round4(maturityMult) * round4(categoryMult) * round4(chainMult)));
-  return { implied, growthPct, growthMult, maturityMult, categoryMult, chainMult, age };
+  // Calibrated log-log regression over the snapshot's live-token protocols. The same arithmetic is
+  // reproduced in the dashboard's impliedOf(), so the page's re-derived number matches the board.
+  const g = finite(protocol.change_7d, 0);
+  const log10Implied =
+    model.regression_intercept +
+    model.regression_b_tvl * Math.log10(Math.max(protocol.tvl_usd, 1)) +
+    model.regression_b_growth * (g / 100) +
+    model.regression_b_category * catRate +
+    model.regression_b_chain * chainRate;
+  const implied = Math.max(1, Math.round(Math.pow(10, log10Implied)));
+  return { implied, growthPct, growthMult, maturityMult, categoryMult, chainMult, age, categoryRate: catRate, chainRate };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -299,6 +323,31 @@ function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
   return new Map(protocols.map((p) => [p.slug, p]));
 }
 
+/**
+ * Sort scored rows by implied value (strictly descending) and assign ranks 1..n. If two rows tie after
+ * rounding, the lower-cap one is nudged by $1 and the sort is repeated, so every row keeps a distinct
+ * implied value and ranks stay strict. Each entry has `.implied` and `.p` (the protocol).
+ */
+function rankRows(scored: Array<{ implied: number; p: SnapshotProtocol }>): void {
+  let changed = true;
+  while (changed) {
+    changed = false;
+    scored.sort(
+      (a, b) =>
+        b.implied - a.implied ||
+        b.p.tvl_usd - a.p.tvl_usd ||
+        (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0),
+    );
+    for (let i = 0; i < scored.length - 1; i++) {
+      if (scored[i].implied === scored[i + 1].implied) {
+        scored[i + 1].implied += 1;
+        changed = true;
+        break;
+      }
+    }
+  }
+}
+
 /** The headline sentence's figures: how many watchlist slugs, how many rows, how many live protocols. */
 export interface BoardSummary {
   watchlist_size: number;
@@ -327,10 +376,10 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   for (const p of early) chosen.set(p.slug, p);
 
   const scored = [...chosen.values()].map((p) => {
-    const { implied, growthPct, growthMult, maturityMult, categoryMult, chainMult, age } = impliedValue(p, snapshot.as_of, model, ctx);
-    return { p, implied, growthPct, growthMult, maturityMult, categoryMult, chainMult, age };
+    const { implied, growthPct, growthMult, maturityMult, categoryMult, chainMult, age, categoryRate, chainRate } = impliedValue(p, snapshot.as_of, model, ctx);
+    return { p, implied, growthPct, growthMult, maturityMult, categoryMult, chainMult, age, categoryRate, chainRate };
   });
-  scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
+  rankRows(scored);
   return scored.map((s, i) => ({
     rank: i + 1,
     slug: s.p.slug,
@@ -354,6 +403,8 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       category_multiplier: round4(s.categoryMult),
       chain_multiplier: round4(s.chainMult),
       age_days: s.age,
+      category_rate: s.categoryRate,
+      chain_rate: s.chainRate,
     },
     farm_steps: farmSteps(s.p, s.age).map(stepText),
   }));
@@ -602,6 +653,8 @@ export function radarRow(row: BoardRow): RadarRow {
     maturity_multiplier: row.model.maturity_multiplier,
     category_multiplier: row.model.category_multiplier,
     chain_multiplier: row.model.chain_multiplier,
+    category_rate: row.model.category_rate,
+    chain_rate: row.model.chain_rate,
     farm_steps: row.farm_steps,
   };
 }
