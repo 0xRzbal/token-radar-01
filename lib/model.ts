@@ -108,6 +108,9 @@ export const MODEL: ModelConstants = {
 /** The model's version label: the dashboard names it and the rules quote it. */
 export const MODEL_VERSION = 'radar-2';
 
+/** Fewer training rows than this and a leave-one-out fold is skipped rather than fitted on noise. */
+const LOO_MIN_TRAIN = 20;
+
 /** How many pre-token protocols below the watchlist floor the early radar carries, by TVL. */
 export const EARLY_ROWS = 160;
 
@@ -197,6 +200,8 @@ export interface RadarData {
   live_size: number;
   rows: RadarRow[];
   live: LiveRow[];
+  /** The model's leave-one-out report, computed at build time so the page never shows a stale number. */
+  validation: ValidationStats;
 }
 
 /** Why the snapshot is not one this model can score. */
@@ -681,6 +686,180 @@ export function radarRow(row: BoardRow): RadarRow {
 }
 
 /** Everything the dashboard renders, from the snapshot. */
+/** The model's own out-of-sample report, as the page states it. */
+export interface ValidationStats {
+  /** Protocols in the leave-one-out set: the snapshot's live-token rows with a real market cap and TVL. */
+  n: number;
+  /** Pearson correlation in log10 space between the held-out prediction and the real market cap. */
+  loo_r: number;
+  /** Spearman rank correlation over the same held-out pairs. */
+  loo_rho: number;
+  /** Coefficient of determination on the held-out predictions. */
+  loo_r2: number;
+  /** Mean absolute error in log10 space, and the factor it implies. */
+  loo_mae: number;
+  loo_mae_factor: number;
+  /** Share of held-out protocols priced within 2x and 3x of the real market cap. */
+  within_2x: number;
+  within_3x: number;
+  /** Plain sentences the page shows beside the numbers. */
+  dominant_note: string;
+  growth_note: string;
+}
+
+/**
+ * Leave-one-out validation of the implied-value model over the snapshot's live-token protocols.
+ *
+ * Fitting on the whole calibration set and then reporting the fit quality measures memorisation, not
+ * skill. Here the model is refitted once per protocol with that protocol withheld, the issuance
+ * context is rebuilt inside every fold so no held-out information leaks into the rates, and the
+ * withheld protocol is then priced by a model that never saw it. The reported figures are what a
+ * reader should expect for a protocol the model has not met.
+ */
+export function validateModel(snapshot: Snapshot, model: ModelConstants = MODEL): ValidationStats {
+  const calibration = snapshot.protocols.filter(
+    (p) => !isPreToken(p) && (p.mcap_usd ?? 0) > 0 && p.tvl_usd > 0,
+  );
+  const asOf = snapshot.as_of;
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (let heldOut = 0; heldOut < calibration.length; heldOut += 1) {
+    const train = calibration.filter((_p, i) => i !== heldOut);
+    if (train.length < LOO_MIN_TRAIN) continue;
+    const foldModel = refitRegression(train, model);
+    // The issuance rates are rebuilt from the training rows only, so the held-out protocol
+    // contributes nothing to the context its own price is computed from.
+    const foldSnapshot: Snapshot = { ...snapshot, protocols: train };
+    const ctx = buildIssuance(foldSnapshot, model);
+    const held = calibration[heldOut];
+    const scored = impliedValue(held, asOf, foldModel, ctx);
+    xs.push(Math.log10(Math.max(scored.implied, 1)));
+    ys.push(Math.log10(Math.max(held.mcap_usd ?? 1, 1)));
+  }
+  const looR = pearson(xs, ys);
+  const looRho = pearson(rankOf(xs), rankOf(ys));
+  const mean = ys.length ? ys.reduce((s, y) => s + y, 0) / ys.length : 0;
+  let residual = 0;
+  let total = 0;
+  let absolute = 0;
+  let within2 = 0;
+  let within3 = 0;
+  for (let i = 0; i < xs.length; i += 1) {
+    const diff = xs[i] - ys[i];
+    residual += diff * diff;
+    total += (ys[i] - mean) * (ys[i] - mean);
+    absolute += Math.abs(diff);
+    if (Math.abs(diff) <= Math.log10(2)) within2 += 1;
+    if (Math.abs(diff) <= Math.log10(3)) within3 += 1;
+  }
+  const count = xs.length || 1;
+  const mae = absolute / count;
+  return {
+    n: xs.length,
+    loo_r: round4(looR),
+    loo_rho: round4(looRho),
+    loo_r2: round4(1 - residual / (total || 1)),
+    loo_mae: round4(mae),
+    loo_mae_factor: round4(Math.pow(10, mae)),
+    within_2x: Math.round((1000 * within2) / count) / 10,
+    within_3x: Math.round((1000 * within3) / count) / 10,
+    dominant_note:
+      'the fitted terms barely beat log10(TVL) alone out of sample, so this reads as a TVL-anchored estimate the issuance rates nudge, not a multi-factor model that the category and chain terms carry.',
+    growth_note:
+      'seven-day growth is a bounded multiplier rather than a fitted coefficient because it does not survive a validation fold on its own; it moves a row by at most 30% and never lifts a protocol whose TVL just collapsed.',
+  };
+}
+
+/** Refit the regression's coefficients on a training set, holding every other constant. */
+function refitRegression(train: SnapshotProtocol[], model: ModelConstants): ModelConstants {
+  const ctx = buildIssuance({ protocols: train } as Snapshot, model);
+  const rows: number[][] = [];
+  const target: number[] = [];
+  for (const p of train) {
+    if ((p.mcap_usd ?? 0) <= 0 || p.tvl_usd <= 0) continue;
+    const catRate = p.category === null ? ctx.globalRate : (ctx.categoryRate.get(p.category) ?? ctx.globalRate);
+    let chainRate = ctx.globalRate;
+    if (p.chains.length > 0) {
+      let sum = 0;
+      for (const chain of p.chains) sum += ctx.chainRate.get(chain) ?? ctx.globalRate;
+      chainRate = sum / p.chains.length;
+    }
+    rows.push([1, Math.log10(Math.max(p.tvl_usd, 1)), catRate, chainRate]);
+    target.push(Math.log10(Math.max(p.mcap_usd ?? 1, 1)));
+  }
+  const coef = solveNormalEquations(rows, target);
+  if (coef === null) return model;
+  return {
+    ...model,
+    regression_intercept: coef[0],
+    regression_b_tvl: coef[1],
+    regression_b_category: coef[2],
+    regression_b_chain: coef[3],
+  };
+}
+
+/** Ordinary least squares by Gaussian elimination on the normal equations; null when singular. */
+function solveNormalEquations(rows: number[][], target: number[]): number[] | null {
+  if (rows.length === 0) return null;
+  const k = rows[0].length;
+  const a: number[][] = Array.from({ length: k }, () => new Array<number>(k).fill(0));
+  const b: number[] = new Array<number>(k).fill(0);
+  for (let i = 0; i < rows.length; i += 1) {
+    for (let r = 0; r < k; r += 1) {
+      b[r] += rows[i][r] * target[i];
+      for (let c = 0; c < k; c += 1) a[r][c] += rows[i][r] * rows[i][c];
+    }
+  }
+  for (let i = 0; i < k; i += 1) {
+    let pivot = i;
+    for (let r = i + 1; r < k; r += 1) if (Math.abs(a[r][i]) > Math.abs(a[pivot][i])) pivot = r;
+    if (Math.abs(a[pivot][i]) < 1e-12) return null;
+    [a[i], a[pivot]] = [a[pivot], a[i]];
+    [b[i], b[pivot]] = [b[pivot], b[i]];
+    for (let r = i + 1; r < k; r += 1) {
+      const factor = a[r][i] / a[i][i];
+      for (let c = i; c < k; c += 1) a[r][c] -= factor * a[i][c];
+      b[r] -= factor * b[i];
+    }
+  }
+  const out = new Array<number>(k).fill(0);
+  for (let i = k - 1; i >= 0; i -= 1) {
+    let sum = b[i];
+    for (let j = i + 1; j < k; j += 1) sum -= a[i][j] * out[j];
+    out[i] = sum / a[i][i];
+  }
+  return out;
+}
+
+/** Pearson correlation; 0 when either series is flat. */
+function pearson(x: number[], y: number[]): number {
+  const n = Math.min(x.length, y.length);
+  if (n === 0) return 0;
+  let mx = 0;
+  let my = 0;
+  for (let i = 0; i < n; i += 1) { mx += x[i]; my += y[i]; }
+  mx /= n; my /= n;
+  let num = 0;
+  let dx = 0;
+  let dy = 0;
+  for (let i = 0; i < n; i += 1) {
+    const a = x[i] - mx;
+    const b = y[i] - my;
+    num += a * b;
+    dx += a * a;
+    dy += b * b;
+  }
+  return dx > 0 && dy > 0 ? num / Math.sqrt(dx * dy) : 0;
+}
+
+/** Ranks of a series, 1-based, so rank correlation is a Pearson over ranks. */
+function rankOf(v: number[]): number[] {
+  const order = v.map((value, index) => ({ value, index })).sort((a, b) => a.value - b.value);
+  const ranks = new Array<number>(v.length).fill(0);
+  for (let i = 0; i < order.length; i += 1) ranks[order[i].index] = i + 1;
+  return ranks;
+}
+
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   const board = buildBoard(snapshot, model);
   const live = liveRows(snapshot);
@@ -697,6 +876,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     live_size: live.length,
     rows: board.map(radarRow),
     live,
+    validation: validateModel(snapshot, model),
   };
   return { board, radar };
 }

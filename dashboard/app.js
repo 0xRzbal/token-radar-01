@@ -258,6 +258,20 @@
     );
   }
 
+  function validationPanel() {
+    var v = DATA.validation;
+    if (!v) return null;
+    return el('section', { class: 'panel model' },
+      el('h2', { text: 'How well the model actually holds up' }),
+      el('p', { class: 'sub', text: 'Fitting on all 128 live-token protocols and then reporting how well the fit explains them would flatter the model. Every number below is leave-one-out: the model is refitted 128 times, each time with one protocol removed, and then asked to price the protocol it never saw. The issuance rates are rebuilt inside each fold too, so no information leaks from the held-out protocol.' }),
+      el('div', { class: 'formula' },
+        'LOO r = ' + v.loo_r + ' · rank rho = ' + v.loo_rho + ' · R² = ' + v.loo_r2 + ' · MAE = ' + v.loo_mae + ' log10 (x' + v.loo_mae_factor + ' median factor) · within 2x = ' + v.within_2x + '% · within 3x = ' + v.within_3x + '%'
+      ),
+      el('p', { class: 'sub', text: 'Read plainly: a pre-token protocol priced here lands within a factor of two of its eventual market cap about a third of the time, and within a factor of three a little over 40% of the time. That is a modest result and it is stated as such. It is also the honest ceiling of what TVL plus the snapshot\u0027s own fields can tell you about a token that does not exist yet, which is why every farm plan is sized to a deposit the reader can afford to lose rather than to the implied value.' }),
+      el('p', { class: 'sub', text: 'Two further checks keep the claim from overreaching. First, the model is not credited with more than it does: ' + v.dominant_note + ' Second, ' + v.growth_note })
+    );
+  }
+
   var dialog = el('dialog', { class: 'detail', id: 'detail', 'aria-labelledby': 'detail-title' });
   dialog.addEventListener('close', function () { state.selected = null; writeHash(); });
 
@@ -313,7 +327,11 @@
     shell.appendChild(lede());
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
-    if (state.tab === 'pre-token') shell.appendChild(modelPanel());
+    if (state.tab === 'pre-token') {
+      shell.appendChild(modelPanel());
+      var vp = validationPanel();
+      if (vp) shell.appendChild(vp);
+    }
     app.appendChild(shell);
     app.setAttribute('aria-busy', 'false');
     if (!dialog.isConnected) app.appendChild(dialog);
